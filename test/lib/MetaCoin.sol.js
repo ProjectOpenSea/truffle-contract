@@ -1,7 +1,7 @@
 var Web3 = require("web3");
 var SolidityEvent = require("web3/lib/web3/event.js");
 
-(function() {
+/*(function() {
   // Planned for future features, logging, etc.
   function Provider(provider) {
     this.provider = provider;
@@ -710,4 +710,4 @@ var SolidityEvent = require("web3/lib/web3/event.js");
     // and we can use that.
     window.MetaCoin = Contract;
   }
-})();
+})();*/
