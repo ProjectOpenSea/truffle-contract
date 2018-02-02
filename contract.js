@@ -1,7 +1,7 @@
 var ethJSABI = require("ethjs-abi");
 var BlockchainUtils = require("truffle-blockchain-utils");
 var Web3 = require("web3");
-var StatusError = require("./statuserror.js")
+var StatusError = require("./statuserror.js");
 
 // For browserified version. If browserify gave us an empty version,
 // look for the one provided by the user.
@@ -10,7 +10,6 @@ if (typeof Web3 == "object" && Object.keys(Web3).length == 0) {
 }
 
 var contract = (function(module) {
-
   // Planned for future features, logging, etc.
   function Provider(provider) {
     this.provider = provider;
@@ -24,7 +23,7 @@ var contract = (function(module) {
     return this.provider.sendAsync.apply(this.provider, arguments);
   };
 
-  var BigNumber = (new Web3()).toBigNumber(0).constructor;
+  var BigNumber = new Web3().toBigNumber(0).constructor;
 
   var Utils = {
     is_object: function(val) {
@@ -42,71 +41,85 @@ var contract = (function(module) {
       }
     },
     decodeLogs: function(C, instance, logs) {
-      return logs.map(function(log) {
-        var logABI = C.events[log.topics[0]];
+      return logs
+        .map(function(log) {
+          var logABI = C.events[log.topics[0]];
 
-        if (logABI == null) {
-          return null;
-        }
+          if (logABI == null) {
+            return null;
+          }
 
-        // This function has been adapted from web3's SolidityEvent.decode() method,
-        // and built to work with ethjs-abi.
+          // This function has been adapted from web3's SolidityEvent.decode() method,
+          // and built to work with ethjs-abi.
 
-        var copy = Utils.merge({}, log);
+          var copy = Utils.merge({}, log);
 
-        function partialABI(fullABI, indexed) {
-          var inputs = fullABI.inputs.filter(function (i) {
-            return i.indexed === indexed;
+          function partialABI(fullABI, indexed) {
+            var inputs = fullABI.inputs.filter(function(i) {
+              return i.indexed === indexed;
+            });
+
+            var partial = {
+              inputs: inputs,
+              name: fullABI.name,
+              type: fullABI.type,
+              anonymous: fullABI.anonymous
+            };
+
+            return partial;
+          }
+
+          var argTopics = logABI.anonymous ? copy.topics : copy.topics.slice(1);
+          var indexedData =
+            "0x" +
+            argTopics
+              .map(function(topics) {
+                return topics.slice(2);
+              })
+              .join("");
+          var indexedParams = ethJSABI.decodeEvent(
+            partialABI(logABI, true),
+            indexedData
+          );
+
+          var notIndexedData = copy.data;
+          var notIndexedParams = ethJSABI.decodeEvent(
+            partialABI(logABI, false),
+            notIndexedData
+          );
+
+          copy.event = logABI.name;
+
+          copy.args = logABI.inputs.reduce(function(acc, current) {
+            var val = indexedParams[current.name];
+
+            if (val === undefined) {
+              val = notIndexedParams[current.name];
+            }
+
+            acc[current.name] = val;
+            return acc;
+          }, {});
+
+          Object.keys(copy.args).forEach(function(key) {
+            var val = copy.args[key];
+
+            // We have BN. Convert it to BigNumber
+            if (val.constructor.isBN) {
+              copy.args[key] = C.web3.toBigNumber("0x" + val.toString(16));
+            }
           });
 
-          var partial = {
-            inputs: inputs,
-            name: fullABI.name,
-            type: fullABI.type,
-            anonymous: fullABI.anonymous
-          };
+          delete copy.data;
+          delete copy.topics;
 
-          return partial;
-        }
-
-        var argTopics = logABI.anonymous ? copy.topics : copy.topics.slice(1);
-        var indexedData = "0x" + argTopics.map(function (topics) { return topics.slice(2); }).join("");
-        var indexedParams = ethJSABI.decodeEvent(partialABI(logABI, true), indexedData);
-
-        var notIndexedData = copy.data;
-        var notIndexedParams = ethJSABI.decodeEvent(partialABI(logABI, false), notIndexedData);
-
-        copy.event = logABI.name;
-
-        copy.args = logABI.inputs.reduce(function (acc, current) {
-          var val = indexedParams[current.name];
-
-          if (val === undefined) {
-            val = notIndexedParams[current.name];
-          }
-
-          acc[current.name] = val;
-          return acc;
-        }, {});
-
-        Object.keys(copy.args).forEach(function(key) {
-          var val = copy.args[key];
-
-          // We have BN. Convert it to BigNumber
-          if (val.constructor.isBN) {
-            copy.args[key] = C.web3.toBigNumber("0x" + val.toString(16));
-          }
+          return copy;
+        })
+        .filter(function(log) {
+          return log != null;
         });
-
-        delete copy.data;
-        delete copy.topics;
-
-        return copy;
-      }).filter(function(log) {
-        return log != null;
-      });
     },
-    promisifyFunction: function(fn, C) {
+    promisifyFunction: function(fn, C, inputs) {
       var self = this;
       return function() {
         var instance = this;
@@ -114,9 +127,22 @@ var contract = (function(module) {
         var args = Array.prototype.slice.call(arguments);
         var tx_params = {};
         var last_arg = args[args.length - 1];
+        var defaultBlock;
 
         // It's only tx_params if it's an object and not a BigNumber.
-        if (Utils.is_object(last_arg) && !Utils.is_big_number(last_arg)) {
+        // It's only defaultBlock if there's an extra non-object input that's not tx_params.
+        var hasTxParams =
+          Utils.is_object(last_arg) && !Utils.is_big_number(last_arg);
+        var hasDefaultBlock = !hasTxParams && args.length > inputs.length;
+        var hasDefaultBlockWithParams =
+          hasTxParams && args.length - 1 > inputs.length;
+
+        // Detect and extract defaultBlock parameter
+        if (hasDefaultBlock || hasDefaultBlockWithParams) {
+          defaultBlock = args.pop();
+        }
+        // Get tx params
+        if (hasTxParams) {
           tx_params = args.pop();
         }
 
@@ -131,7 +157,13 @@ var contract = (function(module) {
                 accept(result);
               }
             };
-            args.push(tx_params, callback);
+
+            if (defaultBlock !== undefined) {
+              args.push(tx_params, defaultBlock, callback);
+            } else {
+              args.push(tx_params, callback);
+            }
+
             fn.apply(instance.contract, args);
           });
         });
@@ -160,7 +192,10 @@ var contract = (function(module) {
               }
 
               var timeout;
-              if (C.synchronization_timeout === 0 || C.synchronization_timeout !== undefined) {
+              if (
+                C.synchronization_timeout === 0 ||
+                C.synchronization_timeout !== undefined
+              ) {
                 timeout = C.synchronization_timeout;
               } else {
                 timeout = 240000;
@@ -175,7 +210,7 @@ var contract = (function(module) {
                   // Reject on transaction failures, accept otherwise
                   // Handles "0x00" or hex 0
                   if (receipt != null) {
-                    if (parseInt(receipt.status, 16) == 0){
+                    if (parseInt(receipt.status, 16) == 0) {
                       var statusError = new StatusError(tx_params, tx, receipt);
                       return reject(statusError);
                     } else {
@@ -188,7 +223,15 @@ var contract = (function(module) {
                   }
 
                   if (timeout > 0 && new Date().getTime() - start > timeout) {
-                    return reject(new Error("Transaction " + tx + " wasn't processed in " + (timeout / 1000) + " seconds!"));
+                    return reject(
+                      new Error(
+                        "Transaction " +
+                          tx +
+                          " wasn't processed in " +
+                          timeout / 1000 +
+                          " seconds!"
+                      )
+                    );
                   }
 
                   setTimeout(make_attempt, 1000);
@@ -220,18 +263,18 @@ var contract = (function(module) {
 
       return merged;
     },
-    parallel: function (arr, callback) {
-      callback = callback || function () {};
+    parallel: function(arr, callback) {
+      callback = callback || function() {};
       if (!arr.length) {
         return callback(null, []);
       }
       var index = 0;
       var results = new Array(arr.length);
-      arr.forEach(function (fn, position) {
-        fn(function (err, result) {
+      arr.forEach(function(fn, position) {
+        fn(function(err, result) {
           if (err) {
             callback(err);
-            callback = function () {};
+            callback = function() {};
           } else {
             index++;
             results[position] = result;
@@ -288,15 +331,33 @@ var contract = (function(module) {
       var item = this.abi[i];
       if (item.type == "function") {
         if (item.constant == true) {
-          this[item.name] = Utils.promisifyFunction(contract[item.name], constructor);
+          this[item.name] = Utils.promisifyFunction(
+            contract[item.name],
+            constructor,
+            item.inputs
+          );
         } else {
-          this[item.name] = Utils.synchronizeFunction(contract[item.name], this, constructor);
+          this[item.name] = Utils.synchronizeFunction(
+            contract[item.name],
+            this,
+            constructor
+          );
         }
 
-        this[item.name].call = Utils.promisifyFunction(contract[item.name].call, constructor);
-        this[item.name].sendTransaction = Utils.promisifyFunction(contract[item.name].sendTransaction, constructor);
+        this[item.name].call = Utils.promisifyFunction(
+          contract[item.name].call,
+          constructor,
+          item.inputs
+        );
+        this[item.name].sendTransaction = Utils.promisifyFunction(
+          contract[item.name].sendTransaction,
+          constructor
+        );
         this[item.name].request = contract[item.name].request;
-        this[item.name].estimateGas = Utils.promisifyFunction(contract[item.name].estimateGas, constructor);
+        this[item.name].estimateGas = Utils.promisifyFunction(
+          contract[item.name].estimateGas,
+          constructor
+        );
       }
 
       if (item.type == "event") {
@@ -304,30 +365,39 @@ var contract = (function(module) {
       }
     }
 
-    this.sendTransaction = Utils.synchronizeFunction(function(tx_params, callback) {
-      if (typeof tx_params == "function") {
-        callback = tx_params;
-        tx_params = {};
-      }
+    this.sendTransaction = Utils.synchronizeFunction(
+      function(tx_params, callback) {
+        if (typeof tx_params == "function") {
+          callback = tx_params;
+          tx_params = {};
+        }
 
-      tx_params.to = self.address;
+        tx_params.to = self.address;
 
-      constructor.web3.eth.sendTransaction.apply(constructor.web3.eth, [tx_params, callback]);
-    }, this, constructor);
+        constructor.web3.eth.sendTransaction.apply(constructor.web3.eth, [
+          tx_params,
+          callback
+        ]);
+      },
+      this,
+      constructor
+    );
 
     this.send = function(value) {
-      return self.sendTransaction({value: value});
+      return self.sendTransaction({ value: value });
     };
 
     this.allEvents = contract.allEvents;
     this.address = contract.address;
     this.transactionHash = contract.transactionHash;
-  };
+  }
 
   Contract._static_methods = {
     setProvider: function(provider) {
       if (!provider) {
-        throw new Error("Invalid provider passed to setProvider(); provider is " + provider);
+        throw new Error(
+          "Invalid provider passed to setProvider(); provider is " + provider
+        );
       }
 
       var wrapped = new Provider(provider);
@@ -339,106 +409,157 @@ var contract = (function(module) {
       var self = this;
 
       if (this.currentProvider == null) {
-        throw new Error(this.contractName + " error: Please call setProvider() first before calling new().");
+        throw new Error(
+          this.contractName +
+            " error: Please call setProvider() first before calling new()."
+        );
       }
 
       var args = Array.prototype.slice.call(arguments);
 
       if (!this.bytecode) {
-        throw new Error(this._json.contractName + " error: contract binary not set. Can't deploy new instance.");
+        throw new Error(
+          this._json.contractName +
+            " error: contract binary not set. Can't deploy new instance."
+        );
       }
 
-      return self.detectNetwork().then(function(network_id) {
-        // After the network is set, check to make sure everything's ship shape.
-        var regex = /__[^_]+_+/g;
-        var unlinked_libraries = self.binary.match(regex);
+      return self
+        .detectNetwork()
+        .then(function(network_id) {
+          // After the network is set, check to make sure everything's ship shape.
+          var regex = /__[^_]+_+/g;
+          var unlinked_libraries = self.binary.match(regex);
 
-        if (unlinked_libraries != null) {
-          unlinked_libraries = unlinked_libraries.map(function(name) {
-            // Remove underscores
-            return name.replace(/_/g, "");
-          }).sort().filter(function(name, index, arr) {
-            // Remove duplicates
-            if (index + 1 >= arr.length) {
-              return true;
+          if (unlinked_libraries != null) {
+            unlinked_libraries = unlinked_libraries
+              .map(function(name) {
+                // Remove underscores
+                return name.replace(/_/g, "");
+              })
+              .sort()
+              .filter(function(name, index, arr) {
+                // Remove duplicates
+                if (index + 1 >= arr.length) {
+                  return true;
+                }
+
+                return name != arr[index + 1];
+              })
+              .join(", ");
+
+            throw new Error(
+              self.contractName +
+                " contains unresolved libraries. You must deploy and link the following libraries before you can deploy a new version of " +
+                self._json.contractName +
+                ": " +
+                unlinked_libraries
+            );
+          }
+        })
+        .then(function() {
+          return new Promise(function(accept, reject) {
+            var contract_class = self.web3.eth.contract(self.abi);
+            var tx_params = {};
+            var last_arg = args[args.length - 1];
+
+            // It's only tx_params if it's an object and not a BigNumber.
+            if (Utils.is_object(last_arg) && !Utils.is_big_number(last_arg)) {
+              tx_params = args.pop();
             }
 
-            return name != arr[index + 1];
-          }).join(", ");
+            // Validate constructor args
+            var constructor = self.abi.filter(function(item) {
+              return item.type === "constructor";
+            });
 
-          throw new Error(self.contractName + " contains unresolved libraries. You must deploy and link the following libraries before you can deploy a new version of " + self._json.contractName + ": " + unlinked_libraries);
-        }
-      }).then(function() {
-        return new Promise(function(accept, reject) {
-          var contract_class = self.web3.eth.contract(self.abi);
-          var tx_params = {};
-          var last_arg = args[args.length - 1];
+            if (
+              constructor.length &&
+              constructor[0].inputs.length !== args.length
+            ) {
+              throw new Error(
+                self.contractName +
+                  " contract constructor expected " +
+                  constructor[0].inputs.length +
+                  " arguments, received " +
+                  args.length
+              );
+            }
 
-          // It's only tx_params if it's an object and not a BigNumber.
-          if (Utils.is_object(last_arg) && !Utils.is_big_number(last_arg)) {
-            tx_params = args.pop();
-          }
+            tx_params = Utils.merge(self.class_defaults, tx_params);
 
-          // Validate constructor args
-          var constructor = self.abi.filter(function(item){
-            return item.type === 'constructor';
+            if (tx_params.data == null) {
+              tx_params.data = self.binary;
+            }
+
+            // web3 0.9.0 and above calls new this callback twice.
+            // Why, I have no idea...
+            var intermediary = function(err, web3_instance) {
+              if (err != null) {
+                reject(err);
+                return;
+              }
+
+              if (
+                err == null &&
+                web3_instance != null &&
+                web3_instance.address != null
+              ) {
+                accept(new self(web3_instance));
+              }
+            };
+
+            args.push(tx_params, intermediary);
+            contract_class.new.apply(contract_class, args);
           });
-
-          if (constructor.length && constructor[0].inputs.length !== args.length){
-            throw new Error(self.contractName + " contract constructor expected " + constructor[0].inputs.length + " arguments, received " + args.length);
-          }
-
-          tx_params = Utils.merge(self.class_defaults, tx_params);
-
-          if (tx_params.data == null) {
-            tx_params.data = self.binary;
-          }
-
-          // web3 0.9.0 and above calls new this callback twice.
-          // Why, I have no idea...
-          var intermediary = function(err, web3_instance) {
-            if (err != null) {
-              reject(err);
-              return;
-            }
-
-            if (err == null && web3_instance != null && web3_instance.address != null) {
-              accept(new self(web3_instance));
-            }
-          };
-
-          args.push(tx_params, intermediary);
-          contract_class.new.apply(contract_class, args);
         });
-      });
     },
 
     at: function(address) {
       var self = this;
 
-      if (address == null || typeof address != "string" || address.length != 42) {
-        throw new Error("Invalid address passed to " + this._json.contractName + ".at(): " + address);
+      if (
+        address == null ||
+        typeof address != "string" ||
+        address.length != 42
+      ) {
+        throw new Error(
+          "Invalid address passed to " +
+            this._json.contractName +
+            ".at(): " +
+            address
+        );
       }
 
       var contract = new this(address);
 
       // Add thennable to allow people opt into new recommended usage.
       contract.then = function(fn) {
-        return self.detectNetwork().then(function(network_id) {
-          var instance = new self(address);
+        return self
+          .detectNetwork()
+          .then(function(network_id) {
+            var instance = new self(address);
 
-          return new Promise(function(accept, reject) {
-            self.web3.eth.getCode(address, function(err, code) {
-              if (err) return reject(err);
+            return new Promise(function(accept, reject) {
+              self.web3.eth.getCode(address, function(err, code) {
+                if (err) return reject(err);
 
-              if (!code || code.replace("0x", "").replace(/0/g, "") === '') {
-                return reject(new Error("Cannot create instance of " + self.contractName + "; no code at address " + address));
-              }
+                if (!code || code.replace("0x", "").replace(/0/g, "") === "") {
+                  return reject(
+                    new Error(
+                      "Cannot create instance of " +
+                        self.contractName +
+                        "; no code at address " +
+                        address
+                    )
+                  );
+                }
 
-              accept(instance);
+                accept(instance);
+              });
             });
-          });
-        }).then(fn);
+          })
+          .then(fn);
       };
 
       return contract;
@@ -449,12 +570,20 @@ var contract = (function(module) {
       return self.detectNetwork().then(function() {
         // We don't have a network config for the one we found
         if (self._json.networks[self.network_id] == null) {
-          throw new Error(self.contractName + " has not been deployed to detected network (network/artifact mismatch)");
+          throw new Error(
+            self.contractName +
+              " has not been deployed to detected network (network/artifact mismatch)"
+          );
         }
 
         // If we found the network but it's not deployed
         if (!self.isDeployed()) {
-          throw new Error(self.contractName + " has not been deployed to detected network (" + self.network_id + ")");
+          throw new Error(
+            self.contractName +
+              " has not been deployed to detected network (" +
+              self.network_id +
+              ")"
+          );
         }
 
         return new self(self.address);
@@ -525,7 +654,11 @@ var contract = (function(module) {
           });
 
           var matches = uris.map(function(uri) {
-            return BlockchainUtils.matches.bind(BlockchainUtils, uri, self.web3.currentProvider);
+            return BlockchainUtils.matches.bind(
+              BlockchainUtils,
+              uri,
+              self.web3.currentProvider
+            );
           });
 
           Utils.parallel(matches, function(err, results) {
@@ -543,7 +676,6 @@ var contract = (function(module) {
 
             accept();
           });
-
         });
       });
     },
@@ -656,7 +788,7 @@ var contract = (function(module) {
         }
 
         return self._property_values[key] || fn.call(self);
-      }
+      };
       var setter = function(val) {
         if (fn.set != null) {
           fn.set.call(self, val);
@@ -711,12 +843,24 @@ var contract = (function(module) {
       var network_id = this.network_id;
 
       if (network_id == null) {
-        throw new Error(this.contractName + " has no network id set, cannot lookup artifact data. Either set the network manually using " + this.contractName + ".setNetwork(), run " + this.contractName + ".detectNetwork(), or use new(), at() or deployed() as a thenable which will detect the network automatically.");
+        throw new Error(
+          this.contractName +
+            " has no network id set, cannot lookup artifact data. Either set the network manually using " +
+            this.contractName +
+            ".setNetwork(), run " +
+            this.contractName +
+            ".detectNetwork(), or use new(), at() or deployed() as a thenable which will detect the network automatically."
+        );
       }
 
       // TODO: this might be bad; setting a value on a get.
       if (this._json.networks[network_id] == null) {
-        throw new Error(this.contractName + " has no network configuration for its current network id (" + network_id + ").");
+        throw new Error(
+          this.contractName +
+            " has no network configuration for its current network id (" +
+            network_id +
+            ")."
+        );
       }
 
       var returnVal = this._json.networks[network_id];
@@ -740,20 +884,33 @@ var contract = (function(module) {
         var address = this.network.address;
 
         if (address == null) {
-          throw new Error("Cannot find deployed address: " + this.contractName + " not deployed or address not set.");
+          throw new Error(
+            "Cannot find deployed address: " +
+              this.contractName +
+              " not deployed or address not set."
+          );
         }
 
         return address;
       },
       set: function(val) {
         if (val == null) {
-          throw new Error("Cannot set deployed address; malformed value: " + val);
+          throw new Error(
+            "Cannot set deployed address; malformed value: " + val
+          );
         }
 
         var network_id = this.network_id;
 
         if (network_id == null) {
-          throw new Error(this.contractName + " has no network id set, cannot lookup artifact data. Either set the network manually using " + this.contractName + ".setNetwork(), run " + this.contractName + ".detectNetwork(), or use new(), at() or deployed() as a thenable which will detect the network automatically.");
+          throw new Error(
+            this.contractName +
+              " has no network id set, cannot lookup artifact data. Either set the network manually using " +
+              this.contractName +
+              ".setNetwork(), run " +
+              this.contractName +
+              ".detectNetwork(), or use new(), at() or deployed() as a thenable which will detect the network automatically."
+          );
         }
 
         // Create a network if we don't have one.
@@ -770,7 +927,14 @@ var contract = (function(module) {
     },
     links: function() {
       if (!this.network_id) {
-        throw new Error(this.contractName + " has no network id set, cannot lookup artifact data. Either set the network manually using " + this.contractName + ".setNetwork(), run " + this.contractName + ".detectNetwork(), or use new(), at() or deployed() as a thenable which will detect the network automatically.");
+        throw new Error(
+          this.contractName +
+            " has no network id set, cannot lookup artifact data. Either set the network manually using " +
+            this.contractName +
+            ".setNetwork(), run " +
+            this.contractName +
+            ".detectNetwork(), or use new(), at() or deployed() as a thenable which will detect the network automatically."
+        );
       }
 
       if (this._json.networks[this.network_id] == null) {
