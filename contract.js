@@ -205,7 +205,9 @@ var contract = (function(module) {
 
               var make_attempt = function() {
                 C.web3.eth.getTransactionReceipt(tx, function(err, receipt) {
-                  if (err) return reject(err);
+                  if (err && !err.toString().includes('unknown transaction')){
+                    return reject(err);
+                  }
 
                   // Reject on transaction failures, accept otherwise
                   // Handles "0x00" or hex 0
@@ -925,6 +927,23 @@ var contract = (function(module) {
         this.network.address = val;
       }
     },
+    transactionHash: {
+      get: function() {
+        var transactionHash = this.network.transactionHash;
+
+        if(transactionHash === null) {
+          throw new Error("Could not find transaction hash for " + this.contractName);
+        }
+
+        return transactionHash;
+      },
+      set: function(val) {
+        if(val === null) {
+          throw new Error("Could not set \`" + val + "\` as the transaction hash for " + this.contractName);
+        }
+        this.network.transactionHash = val;
+      }
+    },
     links: function() {
       if (!this.network_id) {
         throw new Error(
@@ -1054,6 +1073,14 @@ var contract = (function(module) {
       },
       set: function(val) {
         this._json.sourcePath = val;
+      }
+    },
+    legacyAST: {
+      get: function() {
+        return this._json.legacyAST;
+      },
+      set: function(val) {
+        this._json.legacyAST = val;
       }
     },
     ast: {
