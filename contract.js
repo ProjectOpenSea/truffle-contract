@@ -201,46 +201,63 @@ var contract = (function(module) {
                 timeout = 240000;
               }
 
-              var start = new Date().getTime();
+              accept({
+                tx: tx,
+                receipt: new Promise(function(accept, reject) {
+                  var start = new Date().getTime();
 
-              var make_attempt = function() {
-                C.web3.eth.getTransactionReceipt(tx, function(err, receipt) {
-                  if (err && !err.toString().includes('unknown transaction')){
-                    return reject(err);
-                  }
+                  var make_attempt = function() {
+                    C.web3.eth.getTransactionReceipt(tx, function(
+                      err,
+                      receipt
+                    ) {
+                      if (
+                        err &&
+                        !err.toString().includes("unknown transaction")
+                      ) {
+                        return reject(err);
+                      }
 
-                  // Reject on transaction failures, accept otherwise
-                  // Handles "0x00" or hex 0
-                  if (receipt != null) {
-                    if (parseInt(receipt.status, 16) == 0) {
-                      var statusError = new StatusError(tx_params, tx, receipt);
-                      return reject(statusError);
-                    } else {
-                      return accept({
-                        tx: tx,
-                        receipt: receipt,
-                        logs: Utils.decodeLogs(C, instance, receipt.logs)
-                      });
-                    }
-                  }
+                      // Reject on transaction failures, accept otherwise
+                      // Handles "0x00" or hex 0
+                      if (receipt != null) {
+                        if (parseInt(receipt.status, 16) == 0) {
+                          var statusError = new StatusError(
+                            tx_params,
+                            tx,
+                            receipt
+                          );
+                          return reject(statusError);
+                        } else {
+                          return accept({
+                            tx: tx,
+                            receipt: receipt,
+                            logs: Utils.decodeLogs(C, instance, receipt.logs)
+                          });
+                        }
+                      }
 
-                  if (timeout > 0 && new Date().getTime() - start > timeout) {
-                    return reject(
-                      new Error(
-                        "Transaction " +
-                          tx +
-                          " wasn't processed in " +
-                          timeout / 1000 +
-                          " seconds!"
-                      )
-                    );
-                  }
+                      if (
+                        timeout > 0 &&
+                        new Date().getTime() - start > timeout
+                      ) {
+                        return reject(
+                          new Error(
+                            "Transaction " +
+                              tx +
+                              " wasn't processed in " +
+                              timeout / 1000 +
+                              " seconds!"
+                          )
+                        );
+                      }
 
-                  setTimeout(make_attempt, 1000);
-                });
-              };
-
-              make_attempt();
+                      setTimeout(make_attempt, 1000);
+                    });
+                  };
+                  make_attempt();
+                })
+              });
             };
 
             args.push(tx_params, callback);
@@ -931,15 +948,22 @@ var contract = (function(module) {
       get: function() {
         var transactionHash = this.network.transactionHash;
 
-        if(transactionHash === null) {
-          throw new Error("Could not find transaction hash for " + this.contractName);
+        if (transactionHash === null) {
+          throw new Error(
+            "Could not find transaction hash for " + this.contractName
+          );
         }
 
         return transactionHash;
       },
       set: function(val) {
-        if(val === null) {
-          throw new Error("Could not set \`" + val + "\` as the transaction hash for " + this.contractName);
+        if (val === null) {
+          throw new Error(
+            "Could not set `" +
+              val +
+              "` as the transaction hash for " +
+              this.contractName
+          );
         }
         this.network.transactionHash = val;
       }
